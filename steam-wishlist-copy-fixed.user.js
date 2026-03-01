@@ -9,6 +9,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
+// @connect      api.steampowered.com
 // ==/UserScript==
 
 (function () {
@@ -67,38 +68,46 @@
     // Steam returns up to 100 items per page. We loop until we get an empty page.
 
     async function fetchFullWishlist(steamID64) {
-        let allAppIDs = [];
-        let page = 0;
+        // The old /wishlistdata/ endpoint stopped working in November 2024.
+        // The new official endpoint is IWishlistService/GetWishlist/v1.
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://api.steampowered.com/IWishlistService/GetWishlist/v1?steamid=${steamID64}`,
+                headers: { 'Accept': 'application/json, text/plain, */*' },
+                onload: function (response) {
+                    const raw = response.responseText.trim();
 
-        while (true) {
-            const data = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: `https://store.steampowered.com/wishlist/profiles/${steamID64}/wishlistdata/?p=${page}`,
-                    onload: function (response) {
-                        try {
-                            const json = JSON.parse(response.responseText);
-                            resolve(json);
-                        } catch (e) {
-                            reject('Failed to parse wishlist JSON on page ' + page);
+                    if (!raw || raw.startsWith('<')) {
+                        reject(
+                            'Steam returned an unexpected response.\n\n' +
+                            'This usually means:\n' +
+                            '\u2022 This wishlist is set to Private\n' +
+                            '\u2022 You are not logged in to Steam\n\n' +
+                            'Response preview:\n' + raw.substring(0, 200)
+                        );
+                        return;
+                    }
+
+                    try {
+                        const json = JSON.parse(raw);
+                        // Response format: { "response": { "items": [ { "appid": 123, ... }, ... ] } }
+                        const items = json && json.response && json.response.items;
+                        if (!items || items.length === 0) {
+                            resolve([]);
+                            return;
                         }
-                    },
-                    onerror: () => reject('Network error fetching wishlist page ' + page)
-                });
+                        resolve(items.map(item => item.appid));
+                    } catch (e) {
+                        reject(
+                            'Could not parse Steam response.\n\n' +
+                            'First 300 chars:\n' + raw.substring(0, 300)
+                        );
+                    }
+                },
+                onerror: () => reject('Network error while fetching wishlist.')
             });
-
-            // Steam returns an empty object {} when there are no more items
-            const keys = Object.keys(data);
-            if (keys.length === 0) break;
-
-            allAppIDs = allAppIDs.concat(keys.map(k => parseInt(k, 10)));
-            page++;
-
-            // Small delay to be polite to Steam's servers
-            await sleep(300);
-        }
-
-        return allAppIDs;
+        });
     }
 
     // ─── Add a single app to YOUR wishlist ──────────────────────────────────────
